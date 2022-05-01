@@ -246,12 +246,13 @@ class RadioSettingValueMap(RadioSettingValueList):
 
         """
         # Catch bugs early by testing tuple geometry
-        for map_entry in map_entries:
+        _map_entries = list(map_entries)
+        for map_entry in _map_entries:
             if not len(map_entry) == 2:
                 raise InvalidValueError("map_entries must be 2 el tuples "
                                         "instead of: %s" % str(map_entry))
-        user_options = [e[0] for e in map_entries]
-        self._mem_vals = [e[1] for e in map_entries]
+        user_options = [e[0] for e in _map_entries]
+        self._mem_vals = [e[1] for e in _map_entries]
         RadioSettingValueList.__init__(self, user_options, user_options[0])
         if mem_val is not None:
             self.set_mem_val(mem_val)
