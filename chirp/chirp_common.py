@@ -1585,6 +1585,8 @@ def is_version_newer(version):
             _, stamp = v.split('-', 1)
             ver = (int(stamp),)
         elif '.' in v:
+            if v.endswith('dev'):
+                v = v[:-3]
             ver = tuple(int(p) for p in v.split('.'))
         else:
             ver = (0,)
