@@ -144,7 +144,7 @@ class RadioSettingValueFloat(RadioSettingValue):
 
     def get_max(self):
         """Returns the maximum allowed value"""
-
+        return self._max
 
 class RadioSettingValueBoolean(RadioSettingValue):
 
