@@ -27,6 +27,7 @@ import tempfile
 import time
 from optparse import OptionParser
 #import serial
+import six
 from serial import Serial
 
 # change to the tests directory
@@ -951,9 +952,9 @@ class TestCaseClone(TestCase):
     class SerialGarbage(SerialNone):
         def read(self, size):
             if self.isbytes:
-                buf = []
+                buf = bytearray()
                 for i in range(0, size):
-                    buf += i % 256
+                    buf.append(i % 256)
                 return bytes(buf)
             else:
                 buf = ""
@@ -1121,7 +1122,7 @@ class TestOutputHTML(TestOutput):
     def prepare(self):
         print("Writing to %s" % self._filename, end=' ')
         sys.stdout.flush()
-        self._out = file(self._filename, "w")
+        self._out = open(self._filename, "w")
         s = """
 <html>
 <head>
@@ -1205,7 +1206,7 @@ class TestRunner:
 
     def log(self, rclass, tc, e):
         fn = "logs/%s_%s.log" % (directory.radio_class_id(rclass), tc)
-        log = file(fn, "a")
+        log = open(fn, "a")
         print("---- Begin test %s ----" % tc, file=log)
         log.write(e.get_detail())
         print(file=log)
@@ -1345,7 +1346,7 @@ Available tests:
         stdout = sys.stdout
         if not os.path.exists("logs"):
             os.mkdir("logs")
-        sys.stdout = file("logs/verbose", "w")
+        sys.stdout = open("logs/verbose", "w")
         test_out = TestOutputANSI(stdout)
 
     test_out.prepare()
