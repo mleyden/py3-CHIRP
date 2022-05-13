@@ -20,8 +20,10 @@ import time
 import logging
 from chirp import util, chirp_common, bitwise, memmap, errors, directory
 from chirp.settings import RadioSetting, RadioSettingGroup, \
-    RadioSettingValueBoolean, RadioSettingValueFloat, RadioSettingValueString, \
-    RadioSettingValueList, RadioSettingValueMap, RadioSettings, zero_indexed_seq_map
+    RadioSettingValueBoolean, RadioSettingValueString, RadioSettingValueList, \
+    RadioSettingValueMap, RadioSettings, zero_indexed_seq_map, \
+    InvalidValueError
+
 from textwrap import dedent
 
 LOG = logging.getLogger(__name__)
@@ -95,7 +97,7 @@ _AR_F8_MEM_FORMAT = """
         u8      scan_rev;
         u8      backlight;      // 0x0820
         u8      roger_beep;
-        u8      mode_sw_pwd[6];
+        u8      mode_sw_pwd[6]; // Don't think this feature is on this radio
         u8      reset_pwd[6];
         u16     pri_ch;
         u8      ani_sw;         // 0x0830
@@ -228,8 +230,8 @@ CMD_WR = 0x83  # 131
 MEM_VALID = 0x9E
 
 FM_RANGE = (76000000, 108000000)
-VHF_RANGE = (136000000, 174000000)
-# VHF_RANGE_1 = (175000000, 220000000)  // From https://www.abbree.cn/product/abbree-ar-f8-gps-6-bands/
+VHF_RANGE = (136000000, 174000000)      # Lowest freq. after reset = 12302500
+# VHF_RANGE_1 = (175000000, 220000000)  # From https://www.abbree.cn/product/abbree-ar-f8-gps-6-bands/
 # VHF_RANGE_2 = (230000000, 250000000)
 # UHF_RANGE_1 = (330000000, 350000000)
 # UHF_RANGE_2 = (350000000, 400000000)
@@ -243,28 +245,33 @@ SQL_LEVEL = ["Off"] + [str(x) for x in range(1, 10)]
 
 POWER_LEVELS = [chirp_common.PowerLevel("Low", watts=1.00),
                 chirp_common.PowerLevel("High", watts=5.00)]
-# TODO: Implement different power level based on chosen freq. (see /drivers/ft90.py)
-POWER_LEVELS_VHF = [chirp_common.PowerLevel("Low", watts=1.00),
-                chirp_common.PowerLevel("High", watts=5.00)]
-POWER_LEVELS_UHF = [chirp_common.PowerLevel("Low", watts=1.00),
-                chirp_common.PowerLevel("High", watts=4.00)]
+
 ROGER_LIST = ["Off", "BOT", "EOT", "Both"]
 TIMEOUT_TUPLE_LIST = [("%ds" % (x * 15), x) for x in range(1, 61)]
-VOX_LIST = ["Off"] + ["%s" % x for x in range(1, 11)]
+VOX_LIST = ["Off"] + ["%ds" % x for x in range(1, 11)]
 BANDWIDTH_LIST = ["Narrow", "Wide"]
 
 # Tones are numeric, Defined in \chirp\chirp_common.py
 CTCSS_TONES = sorted(chirp_common.TONES)
 # Converted to strings
-TONES_LIST = ["Off"] + [str(x) for x in CTCSS_TONES]
+TONES_LIST = [""] + [str(x) for x in CTCSS_TONES]
 DTCS_CODES = sorted(chirp_common.DTCS_CODES)
 # Now append the DxxxN and DxxxI DTCS codes
 for x in DTCS_CODES:
     TONES_LIST.append("D{:03d}N".format(x))
 for x in DTCS_CODES:
-    TONES_LIST.append("D{:03d}R".format(x))
-
-TOA_LIST = ["Off"] + ["%s" % x for x in range(1, 11)]  # Transmit overtime alarm
+    TONES_LIST.append("D{:03d}I".format(x))
+TONE_MODE_LIST = ["", "Tone", "TSQL", "DTCS", "Cross"]
+CROSS_MODE_LIST = [
+            "Tone->Tone",
+            "Tone->DTCS",
+            "DTCS->Tone",
+            "DTCS->",
+            "->Tone",
+            "->DTCS",
+            "DTCS->DTCS",
+        ]
+TOA_LIST = ["Off"] + ["%ds" % x for x in range(1, 11)]  # Transmit overtime alarm
 
 LANGUAGE_LIST = ["Chinese", "English"]
 
@@ -276,8 +283,7 @@ PF3KEY_LIST = ["Disable", "Scan", "Lamp", "Tele Alarm", "SOS-CH", "Radio", "MONI
 WORKMODE_LIST = ["Frequency", "Channel No.", "Ch. No.+Freq.", "Channel Name"]
 BACKLIGHT_LIST = ["Always On"] + [str(x) + "s" for x in range(1, 21)] + \
                  ["Always Off"]
-# TODO: This may be in frequency / 10???
-# OFFSET_FREQ = []
+
 OFFSET_LIST = ["Off", "+", "-"]
 
 SCANCD_LIST = ["CTCSS", "DCS"]
@@ -287,12 +293,11 @@ SPMUTE_LIST = ["QT", "QT+DTMF", "QT*DTMF"]
 DTMFST_LIST = ["Off", "DT-ST", "ANI-ST", "DT+ANI"]
 
 ALERTS = [1750, 2100, 1000, 1450]
-ALERTS_LIST = [str(x) for x in ALERTS]
+ALERTS_LIST = ["%dkHz" % x for x in ALERTS]
 PTTDELAY_TUPLE_LIST = [("%dms" % (x * 100), x) for x in range(1, 31)]
 PTTID_LIST = ["BOT", "EOT", "Both"]
 RINGTIME_LIST = ["Off"] + ["%s" % x for x in range(1, 106)]  # Time to ring before speaking
-SCANAGRP_LIST = ["All"] + ["%s" % x for x in range(1, 11)]
-SCANBGRP_LIST = ["All"] + ["%s" % x for x in range(1, 11)]
+SCANGRP_LIST = ["All"] + ["%s" % x for x in range(1, 11)]
 
 SCQT_LIST = ["Decoder", "Encoder", "All"]
 SMUTESET_LIST = ["Off", "Rx", "Tx", "Rx/Tx & mute"]
@@ -305,24 +310,24 @@ CHAN_TUPLE_LIST = [("Ch-%03d" % x, x) for x in range(1, 1000)]
 # TODO: The following aren't in the radio menu - remove???
 DTMF_TIMES = ["%s" % x for x in range(50, 501, 10)]
 RPTSET_LIST = ["X-TWRPT", "X-DIRRPT"]
-LIST_10 = ["Off"] + ["%s" % x for x in range(1, 11)]
-SCANGRP_LIST = ["All"] + ["%s" % x for x in range(1, 11)]
-HOLD_TIMES = ["Off"] + ["%s" % x for x in range(100, 5001, 100)]
+HOLD_TIMES = ["Off"] + ["%ds" % x for x in range(100, 5001, 100)]
 RPTMODE_LIST = ["Radio", "Repeater"]
 
+# Appears to be nothing above this location
+MEM_SIZE = 0x6B00
 
 def do_download(radio):
     """Talk to an Abbree AR-F8 and do a download"""
-    image = bytearray([0xFF] * 0x8000)  # bytearray is easier to deal with...
+    image = bytearray([0xFF] * MEM_SIZE)
     try:
         result = identify_radio(radio)
-        if len(result) == 33:
-            image = read_mem(radio, 0x00, 0x8000, 64)
+        if len(result) == 32:
+            image = bytearray(read_mem(radio, 0x00, MEM_SIZE, 64))
             # It doesn't appear that the following
             # are stored in 'normal' memory, so get
             # them from the ID process and store them
             # in 'memory' where the app expects them
-            image[0x0044:0x0065] = result
+            image[0x0044:0x0064] = result
         else:
             raise errors.RadioError("Incorrect radio limits size")
 
@@ -341,7 +346,7 @@ def do_upload(radio):
         # Check we are talking to the correct radio
         result = identify_radio(radio)
         if len(result) == 33:
-            upload(radio, 0x0480, 0x8000, 64)   # Only writing to valid radio memory areas
+            upload(radio, 0x0480, MEM_SIZE, 64)   # Only writing to valid radio memory areas
     except errors.RadioError:
         raise
     except Exception as e:
@@ -402,7 +407,7 @@ def identify_radio(radio):
         LOG.debug("Model %s" % util.hexprint(resp[0:9]))
         if resp[0:9] == bytes(radio.mem_model, 'ascii'):
             # Identified radio, send back the radio rx/tx limits
-            return resp[10:]
+            return resp[11:]
         if len(resp) == 0:
             raise Exception("Radio not responding")
         else:
@@ -441,7 +446,7 @@ def read_mem(radio, start, end, blocksize):
             status.msg = "Cloning from radio"
             radio.status_fn(status)
     write_record(radio, CMD_END)
-    return image
+    return bytes(image)
 
 
 def write_record(radio, cmd, payload=None):
@@ -462,7 +467,7 @@ def write_record(radio, cmd, payload=None):
     checksum = calc_checksum(_packet[1:])
     _packet.extend([checksum])
     LOG.debug("Sent:\n%s" % util.hexprint(_packet.hex()))
-    radio.pipe.write(_packet)
+    radio.pipe.write(bytes(_packet))
 
 
 def read_record(radio, cmd):
@@ -499,51 +504,59 @@ def add_radio_bool(radio_setting_group, mem_field, ui_name, current, doc=None):
     radio_setting_group.append(setting)
 
 
-def set_freq(setting, obj, atrb, mult):
-    """ Callback to set frequency by applying multiplier"""
-    value = int(float(str(setting.value)) * mult)
-    setattr(obj, atrb, value)
+def format_freq(freq):
+    """Format a frequency given in Hz as a string"""
+    return "%.05f" % (freq / 1000000)
+
+
+def freq2int(val, min, max):
+    """Convert a frequency as a string to a u32. Units is Hz
+    """
+    _freq = chirp_common.parse_freq(str(val))
+    if _freq > max or _freq < min:
+        raise InvalidValueError("Frequency %s is not within range %s-%s" %
+                                (chirp_common.format_freq(_freq),
+                                 chirp_common.format_freq(min),
+                                 chirp_common.format_freq(max)))
+    return _freq
+
+
+def int2freq(freq):
+    """
+    Convert a u32 frequency to a string for UI data entry/display
+    This is stored in the radio as units of 10Hz which we compensate to Hz.
+    A value of -1 indicates <no frequency>, i.e. unused channel.
+    """
+    if int(freq) > 0:
+        f = format_freq(freq * 10)
+        return f
+    else:
+        return ""
+
+
+def set_freq(setting, obj, atrb, min, max):
+    """ Callback to set frequency as MHz/10"""
+    f = freq2int(setting.value, min, max)/10
+    setattr(obj, atrb, f)
     return
 
 
-def validate_freq(freq):
-    """Check freq is within valid range
-    and return a float string representation"""
-    if type(freq) is str:
-        val = chirp_common.parse_freq(freq)
-    else:
-        raise errors.RadioError("Frequency not a string value")
-    min_freq, max_freq = VHF_RANGE
-    try:
-        if val < max_freq:
-            if min_freq < val < max_freq:
-                return chirp_common.format_freq(val)
-            else:
-                raise errors.RadioError("Frequency out of range")
-        min_freq, max_freq = UHF_RANGE
-        if val > min_freq:
-            if min_freq < val < max_freq:
-                return chirp_common.format_freq(val)
-            else:
-                raise errors.RadioError("Frequency out of range")
-    finally:
-        return 0
+def set_offset(setting, obj, atrb, min, max):
+    """ Callback to set offset frequency"""
+    f = freq2int(setting.value, min, max)
+    if f > 0:
+        setattr(obj, atrb, f)
+    return
 
 
-def validate_offset(freq, shift_dir, offset):
-    """Check if freq +/- offset is valid"""
-    f = chirp_common.parse_freq(freq)
-    if shift_dir == 0:  # +'ve offset
-        val = f + offset
+# Validate memory value
+def validate_mem(obj, attr, min_val, max_val, default):
+    _val = getattr(obj, attr)
+    if _val < min_val or _val > max_val:
+        LOG.info("%s.%s out of range. Read %d and set to %d" % (obj._name, attr, _val, default))
+        return default
     else:
-        val = f - offset
-    try:
-        if validate_freq(f):
-            return offset
-    except errors.RadioError:
-        errors.RadioError("Offset too large, frequency out of range")
-    finally:
-        return 0
+        return _val
 
 
 # Support for the Abbree AR-F8 radio
@@ -567,14 +580,17 @@ def validate_offset(freq, shift_dir, offset):
 #  (2 bytes location + 64 bytes data).
 
 @directory.register
-class ARF8Radio(chirp_common.CloneModeRadio,
+class AbbreeARF8Radio(chirp_common.CloneModeRadio,
                 chirp_common.ExperimentalRadio):
     """Abbree AR-F8"""
     VENDOR = "Abbree"
     MODEL = "AR-F8"
+    ALIAS = []  # TODO: There are many aliases of this radio e.g. RADTEL, JIANPAI,
+                # JJCC (some with bluetooth may have similar memory layout)
     mem_model = "KG-UV8D-A"  # An ABBREE AR-F8 is identified as 'KG-UV8D-A' in radio mem
     FILE_IDENT = "Abbree_AR-F8"
     BAUD_RATE = 19200
+    NEEDS_COMPAT_SERIAL = False
 
     def get_features(self):
         rf = chirp_common.RadioFeatures()
@@ -588,7 +604,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         rf.has_name = True
         rf.has_bank = False
         rf.has_bank_names = False
-        rf.has_tuning_step = True
+        rf.has_tuning_step = False
         rf.has_ctone = True
         rf.has_cross = True
         rf.has_infinite_number = False
@@ -598,35 +614,23 @@ class ARF8Radio(chirp_common.CloneModeRadio,
 
         # Attributes
         rf.valid_modes = ["FM", "NFM"]
-        rf.valid_tmodes = ["", "Tone", "TSQL", "DTCS", "Cross"]
+        rf.valid_tmodes = TONE_MODE_LIST
         rf.valid_duplexes = ["", "+", "-"]
         rf.valid_tuning_steps = STEPS
         rf.valid_bands = [VHF_RANGE, UHF_RANGE]
         rf.valid_skips = ["", "S"]
         rf.valid_power_levels = POWER_LEVELS
         rf.valid_characters = chirp_common.CHARSET_ASCII
-        rf.valid_name_length = 6
-        rf.valid_cross_modes = [
-            "Tone->Tone",
-            "Tone->DTCS",
-            "DTCS->Tone",
-            "DTCS->",
-            "->Tone",
-            "->DTCS",
-            "DTCS->DTCS",
-        ]
-        # "valid_dtcs_pols": [],
+        rf.valid_name_length = 8
+        rf.valid_cross_modes = CROSS_MODE_LIST
+        rf.valid_dtcs_pols = ['NN', 'NR', 'RN', 'RR']
         rf.valid_dtcs_codes = DTCS_CODES
-        # "valid_special_chans": [],
 
         rf.has_sub_devices = False
         rf.memory_bounds = (1, 999)
         rf.can_odd_split = False
         rf.can_delete = True
 
-        # D-STAR
-        # "requires_call_lists": BOOLEAN,
-        # "has_implicit_calls": BOOLEAN,
         return rf
 
     def sync_in(self):
@@ -636,10 +640,13 @@ class ARF8Radio(chirp_common.CloneModeRadio,
             raise
         except Exception as e:
             raise errors.RadioError("Failed to communicate with radio: %s" % e)
-        self._memobj = bitwise.parse(_AR_F8_MEM_FORMAT, self._mmap)
+        self.process_mmap()
 
     def sync_out(self):
         do_upload(self)
+
+    def process_mmap(self):
+        self._memobj = bitwise.parse(_AR_F8_MEM_FORMAT, self._mmap)
 
     @classmethod
     def match_model(cls, filedata, filename):
@@ -668,11 +675,15 @@ class ARF8Radio(chirp_common.CloneModeRadio,
             return code, pol
 
         tpol = False
-        if _mem.txtone != 0xFFFF and (_mem.txtone & 0x4000) == 0x4000:
+        if _mem.txtone != 0xFFFF and (_mem.txtone & 0x2800) == 0x2800:
             tcode, tpol = _get_dcs(_mem.txtone)
             mem.dtcs = tcode
             txmode = "DTCS"
         elif _mem.txtone != 0xFFFF and _mem.txtone != 0x0:
+            if (_mem.txtone/10) not in CTCSS_TONES:
+                LOG.info("%s out of range. Read %d and "
+                         "set to %d" % ("_mem.txtone", _mem.txtone, CTCSS_TONES[0]*10))
+                _mem.txtone = CTCSS_TONES[0] * 10
             mem.rtone = (_mem.txtone & 0x7fff) / 10.0
             txmode = "Tone"
         else:
@@ -680,11 +691,15 @@ class ARF8Radio(chirp_common.CloneModeRadio,
 
         rpol = False
 
-        if _mem.rxtone != 0xFFFF and (_mem.rxtone & 0x4000) == 0x4000:
+        if _mem.rxtone != 0xFFFF and (_mem.rxtone & 0x2800) == 0x2800:
             rcode, rpol = _get_dcs(_mem.rxtone)
             mem.rx_dtcs = rcode
             rxmode = "DTCS"
         elif _mem.rxtone != 0xFFFF and _mem.rxtone != 0x0:
+            if (_mem.rxtone / 10) not in CTCSS_TONES:
+                LOG.info("%s out of range. Read %d and "
+                         "set to %d" % ("_mem.rxtone", _mem.rxtone, CTCSS_TONES[0] * 10))
+                _mem.rxtone = CTCSS_TONES[0] * 10
             mem.ctone = (_mem.rxtone & 0x7fff) / 10.0
             rxmode = "Tone"
         else:
@@ -712,7 +727,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
 
         mem = chirp_common.Memory()
         mem.number = number
-        # TODO: No idea what this does...
+
         _valid = self._memobj.valid[mem.number]
 
         LOG.debug("%d %s", number, _valid == MEM_VALID)
@@ -722,6 +737,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         else:
             mem.empty = False
 
+        # Freq. is stored in 10's of Hz
         mem.freq = int(_mem.rxfreq) * 10
 
         if _mem.txfreq == 0xFFFFFFFF:
@@ -752,14 +768,14 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         mem.extra = RadioSettingGroup('Extra', 'extra')
         mem.extra.append(RadioSetting('dcs_type', 'DCS Type',
                                       RadioSettingValueMap(zero_indexed_seq_map(DCSTYPE_LIST), _mem.dcs_type)))
+
+        _mem.mute_mode = validate_mem(_mem, "mute_mode", 0, len(SPMUTE_LIST)-1, 0)
         mem.extra.append(RadioSetting('mute_mode', 'Speaker mute mode',
                                       RadioSettingValueMap(zero_indexed_seq_map(SPMUTE_LIST), _mem.mute_mode)))
-        if not 1 < _mem.step < len(STEPS):
-            _mem.step = 1
+        _mem.step = validate_mem(_mem, "step", 1, len(STEPS), 1)
         mem.extra.append(RadioSetting('step', 'Frequency step',
                                       RadioSettingValueMap(STEP_TUPLE_LIST, _mem.step)))
-        if not 0 < _mem.squelch < len(SQL_LEVEL):
-            _mem.squelch = 0
+        _mem.squelch = validate_mem(_mem, "squelch", 0, len(SQL_LEVEL)-1, 0)
         mem.extra.append(RadioSetting('squelch', 'Squelch level',
                                       RadioSettingValueMap(zero_indexed_seq_map(SQL_LEVEL), _mem.squelch)))
 
@@ -809,17 +825,13 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         _mem = self._memobj.memory[number]
         _nam = self._memobj.names[number]
 
-        # TODO: If empty, should set all this channels memory to 0x00 or 0xFF???
         if mem.empty:
-            _mem.set_raw("\x00" * (_mem.size() / 8))
+            _mem.set_raw("\x00" * int(_mem.size() / 8))
             self._memobj.valid[number] = 0
-            self._memobj.names[number].set_raw("\x00" * (_nam.size() / 8))
+            self._memobj.names[number].set_raw("\x00" * int(_nam.size() / 8))
             return
 
-        # TODO: Set all this channels memory to 0x00 before filling it in???
-
-        f = int(mem.freq / 10)
-        _mem.rxfreq = f
+        _mem.rxfreq = int(mem.freq / 10)
         if mem.duplex == "off":
             _mem.txfreq = 0xFFFFFFFF
         elif mem.duplex == "split":
@@ -846,7 +858,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
 
         # Now set the 'extras'
         for setting in mem.extra:
-            if type(setting.value) is 'tuple':
+            if type(setting.value) == 'tuple':
                 name, val = setting.value
                 setting.value = val
             setattr(_mem, setting.get_name(), int(setting.value))
@@ -862,6 +874,8 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         _settings = self._memobj.settings
         _vfoa = self._memobj.vfoa
         _vfob = self._memobj.vfob
+        _vhf_limits = self._memobj.vhf_limits
+        _uhf_limits = self._memobj.uhf_limits
 
         # Create the tabs
         cfg_grp = RadioSettingGroup("cfg_grp", "Configuration")
@@ -876,15 +890,11 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         #
         # Configuration Settings
         #
-        # TODO: Menu Available in CH Mode??? (see WLT-UV100 Application)
-
         # Menu Number:
         # 1
         # Step - see VFO Group
-
         # 2
         # SQL Level - see VFO Group
-
         # 3
         add_radio_bool(cfg_grp, "power_save", "Battery Save", _settings.power_save,
                        doc="Select to activate or deactivate battery saver.")
@@ -896,7 +906,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           doc="Sends an end-of-transmission tone to indicate to other "
                               "stations that the transmission has ended.")
         # 6
-        add_radio_setting(cfg_grp, "timeout", "Timeout Timer",
+        add_radio_setting(cfg_grp, "timeout", "Timeout TimerOFFSET (s)",
                           TIMEOUT_TUPLE_LIST, _settings.timeout,
                           doc="Limit transmission time to a set value.")
         # 7
@@ -909,7 +919,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         add_radio_bool(cfg_grp, "voice", "Voice Prompt", _settings.voice,
                        doc="Menu voice prompt.")
         # 10
-        add_radio_setting(cfg_grp, "toalarm", "Timeout Alarm",
+        add_radio_setting(cfg_grp, "toalarm", "Timeout Alarm (s)",
                           zero_indexed_seq_map(TOA_LIST), _settings.toalarm,
                           doc="Alarm duration when nearing transmission timeout.")
         # 11
@@ -935,8 +945,6 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         # Receiver DCS - set per Channel
         # 18
         # Transmitter DCS - set per Channel
-        # TODO: The above appear to be mixed up in radio memory
-        # R-DCS appears to overwrite tx_tone???
         # 19
         # DCS Type - set per channel
         # 20
@@ -952,7 +960,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           zero_indexed_seq_map(WORKMODE_LIST), _settings.workmode_b,
                           doc="What info. is displayed for working channel B.")
         # 23
-        add_radio_setting(cfg_grp, "backlight", "LCD Backlight timeout",
+        add_radio_setting(cfg_grp, "backlight", "LCD Backlight timeout (s)",
                           zero_indexed_seq_map(BACKLIGHT_LIST), _settings.backlight,
                           doc="Select the time to activate the LCD backlight.")
         # 24
@@ -975,6 +983,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         #                  zero_indexed_seq_map(SCANCD_LIST), _settings.scncd,
         #                  doc="Select CTCSS or DCS scanning.")
         # 31
+        _settings.ponmsg = validate_mem(_settings, "ponmsg", 0, len(PONMSG_TUPLE_LIST), 1)
         add_radio_setting(cfg_grp, "ponmsg", "Poweron message",
                           PONMSG_TUPLE_LIST, _settings.ponmsg,
                           doc="Radio boot display option.")
@@ -992,6 +1001,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         # 36
         # Autlock Keypad - see Keys Group
         # 37
+        # TODO: Implement Priority Channel logic - see https://chirp.danplanet.com/projects/chirp/wiki/MemoryEditorColumns
         add_radio_bool(cfg_grp, "prich_sw", "Priority Channel Switch", _settings.prich_sw,
                        doc="Priority scan channel enable.")
         add_radio_setting(cfg_grp, "pri_ch", "Priority Channel",
@@ -1004,7 +1014,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           zero_indexed_seq_map(ALERTS_LIST), _settings.alert,
                           doc="Repeater single tone pulse frequency.")
         # 40
-        add_radio_setting(cfg_grp, "ptt_delay", "PTT-ID Delay",
+        add_radio_setting(cfg_grp, "ptt_delay", "PTT-ID Delay (ms)",
                           PTTDELAY_TUPLE_LIST, _settings.ptt_delay,
                           doc="Delay between press of [PTT] key and transmit of ANI ID.")
         # 41
@@ -1012,7 +1022,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           zero_indexed_seq_map(PTTID_LIST), _settings.ptt_id,
                           doc="Caller ID transmission mode - at beginning, end or both.")
         # 42
-        add_radio_setting(cfg_grp, "ring_time", "RX Ringing Duration",
+        add_radio_setting(cfg_grp, "ring_time", "RX Ringing Duration (s)",
                           zero_indexed_seq_map(RINGTIME_LIST), _settings.ring_time,
                           doc="Time to ring when receiving signal.")
         # 43
@@ -1035,6 +1045,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         # Call Code - see Call Group Settings
         # 49
         # LCD Background styles
+        _settings.screen_style = validate_mem(_settings, "screen_style", 0, len(STYLES_LIST), 0)
         add_radio_setting(cfg_grp, "screen_style", "Display colour",
                           zero_indexed_seq_map(STYLES_LIST), _settings.screen_style,
                           doc="LCD background colour.")
@@ -1043,53 +1054,11 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         # 51
         # Adjust Time
         # 52
+        _settings.adj_time = validate_mem(_settings, "adj_time", 0, len(ADJTIME_LIST), 0)
         add_radio_setting(cfg_grp, "adj_time", "GPS Time Adjust (hours)",
                           zero_indexed_seq_map(ADJTIME_LIST), _settings.adj_time,
                           doc="Adjust display time from GPS UTC(GMT).")
-        # TODO: Not sure about any of these settings - not in radio menu
-        """
-        rs = RadioSetting("rpt_mode", "Radio Mode",
-                          RadioSettingValueList(RPTMODE_LIST,
-                                                RPTMODE_LIST[_settings.
-                                                             rpt_mode]))
-        cfg_grp.append(rs)
-        rs = RadioSetting("rpt_set", "Repeater Setting",
-                          RadioSettingValueList(RPTSET_LIST,
-                                                RPTSET_LIST[_settings.
-                                                            rpt_set]))
-        cfg_grp.append(rs)
-        rs = RadioSetting("rpt_spk", "Repeater Mode Speaker",
-                          RadioSettingValueBoolean(_settings.rpt_spk))
-        cfg_grp.append(rs)
-        rs = RadioSetting("rpt_ptt", "Repeater PTT",
-                          RadioSettingValueBoolean(_settings.rpt_ptt))
-        cfg_grp.append(rs)
-        rs = RadioSetting("dtmf_tx_time", "DTMF Tx Duration",
-                          RadioSettingValueList(DTMF_TIMES,
-                                                DTMF_TIMES[_settings.
-                                                           dtmf_tx_time]))
-        cfg_grp.append(rs)
-        rs = RadioSetting("dtmf_interval", "DTMF Interval",
-                          RadioSettingValueList(DTMF_TIMES,
-                                                DTMF_TIMES[_settings.
-                                                           dtmf_interval]))
-        cfg_grp.append(rs)
-        rs = RadioSetting("rpt_hold", "Repeater Hold Time",
-                          RadioSettingValueList(HOLD_TIMES,
-                                                HOLD_TIMES[_settings.
-                                                           rpt_hold]))
-        cfg_grp.append(rs)
-        _pwd = "".join(map(chr, _settings.mode_sw_pwd))
-        val = RadioSettingValueString(0, 6, _pwd)
-        val.set_mutable(True)
-        rs = RadioSetting("mode_sw_pwd", "Mode Switch Password", val)
-        cfg_grp.append(rs)
-        _pwd = "".join(map(chr, _settings.reset_pwd))
-        val = RadioSettingValueString(0, 6, _pwd)
-        val.set_mutable(True)
-        rs = RadioSetting("reset_pwd", "Reset Password", val)
-        cfg_grp.append(rs)
-        """
+
         #
         # VFO A Settings
         #
@@ -1116,32 +1085,19 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         min_vhf, max_vhf = VHF_RANGE
         min_uhf, max_uhf = UHF_RANGE
 
-        val = _vfoa.rxfreq / 100000
-        rx = RadioSettingValueFloat(min_vhf / 1000000, max_uhf / 1000000, val, 0.1, 1)
-        rs = RadioSetting("vfoa.rxfreq", "VFO A Rx Frequency", rx)
-        rs.set_apply_callback(set_freq, _vfoa, "rxfreq", 100000)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vfoa.rxfreq))
+        rs = RadioSetting("vfoa.rxfreq", "VFO A Rx Frequency (MHz)", rsvs)
+        rs.set_apply_callback(set_freq, _vfoa, "rxfreq", min_vhf, max_uhf)
         vfo_grp.append(rs)
 
-        val = _vfoa.txoffset / 100000
-        rx = RadioSettingValueFloat(0, 20, val, 0.1, 1)
-        rs = RadioSetting("vfoa.txoffset", "VFO A Tx Offset", rx)
-        rs.set_apply_callback(set_freq, _vfoa, "txoffset", 100000)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vfoa.txoffset))
+        rs = RadioSetting("vfoa.txoffset", "VFO A Tx Offset (MHz)", rsvs)
+        # TODO: What is the max an offset can be?
+        rs.set_apply_callback(set_offset, _vfoa, "txoffset", 0, max_uhf-min_vhf)
         vfo_grp.append(rs)
 
-        # TODO: Need to map radio mem rxtone setting to drop down list
-        # e.g. rxtone = 0x829E = CTCSS 67.0 = Item 1 in TONES_LIST
-        """
-        #   u16   rxtone;
-        val = self._get_tone(_mem, mem)
+        # TODO: VFOA RX/TX Tones
 
-        add_radio_setting(vfo_grp, "vfoa.rxtone", "VFO A RX Tone",
-                          zero_indexed_seq_map(TONES_LIST), _vfoa.rxtone,
-                          doc="VFO A RX Tone.")
-        #   u16   txtone;
-        add_radio_setting(vfo_grp, "vfoa.txtone", "VFO A TX Tone",
-                          zero_indexed_seq_map(TONES_LIST), _vfoa.txtone,
-                          doc="VFO A TX Tone.")
-        """
         add_radio_setting(vfo_grp, "vfoa.power", "VFO A Power",
                           zero_indexed_seq_map(["Low", "High"]), _vfoa.power,
                           doc="VFO A TX Power.")
@@ -1157,7 +1113,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           zero_indexed_seq_map(BANDWIDTH_LIST), _vfoa.iswide,
                           doc="VFO A Wide/Narrow FM.")
 
-        add_radio_setting(vfo_grp, "vfoa.step", "VFO A Freq. Step",
+        add_radio_setting(vfo_grp, "vfoa.step", "VFO A Freq. Step (kHz)",
                           STEP_TUPLE_LIST, _vfoa.step,
                           doc="VFO A Freq. Step.")
         add_radio_setting(vfo_grp, "vfoa.squelch", "VFO A Squelch",
@@ -1169,28 +1125,19 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         add_radio_setting(vfo_grp, "work_chb", "VFO B Channel",
                           CHAN_TUPLE_LIST, _settings.work_chb,
                           doc="VFO B Channel.")
-        val = _vfob.rxfreq / 100000
-        rx = RadioSettingValueFloat(min_vhf / 1000000, max_uhf / 1000000, val, 0.1, 1)
-        rs = RadioSetting("vfob.rxfreq", "VFO B Rx Frequency", rx)
-        rs.set_apply_callback(set_freq, _vfob, "rxfreq", 100000)
+
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vfob.rxfreq))
+        rs = RadioSetting("vfob.rxfreq", "VFO B Rx Frequency (MHz)", rsvs)
+        rs.set_apply_callback(set_freq, _vfob, "rxfreq", min_vhf, max_uhf)
         vfo_grp.append(rs)
 
-        val = _vfob.txoffset / 100000
-        rx = RadioSettingValueFloat(0, 20, val, 0.1, 1)
-        rs = RadioSetting("vfob.txoffset", "VFO B Tx Offset", rx)
-        rs.set_apply_callback(set_freq, _vfob, "txoffset", 100000)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vfob.txoffset))
+        rs = RadioSetting("vfob.txoffset", "VFO B Tx Offset (MHz)", rsvs)
+        # TODO: What is the max an offset can be?
+        rs.set_apply_callback(set_offset, _vfob, "txoffset", 0, max_uhf - min_vhf)
         vfo_grp.append(rs)
 
-        """
-        #   u16   rxtone;
-        add_radio_setting(vfo_grp, "vfob.rxtone", "VFO B RX Tone",
-                          zero_indexed_seq_map(TONES_LIST), _vfob.rxtone,
-                          doc="VFO B RX Tone.")
-        #   u16   txtone;
-        add_radio_setting(vfo_grp, "vfob.txtone", "VFO B TX Tone",
-                          zero_indexed_seq_map(TONES_LIST), _vfob.txtone,
-                          doc="VFO B TX Tone.")
-        """
+        # TODO: VFOB RX/TX Tones
 
         add_radio_setting(vfo_grp, "vfob.power", "VFO B Power",
                           zero_indexed_seq_map(["Low", "High"]), _vfob.power,
@@ -1208,7 +1155,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                           zero_indexed_seq_map(BANDWIDTH_LIST), _vfob.iswide,
                           doc="VFO B Wide/Narrow FM.")
 
-        add_radio_setting(vfo_grp, "vfob.step", "VFO B Freq. Step",
+        add_radio_setting(vfo_grp, "vfob.step", "VFO B Freq. Step (kHz)",
                           STEP_TUPLE_LIST, _vfob.step,
                           doc="VFO B Freq. Step.")
         add_radio_setting(vfo_grp, "vfob.squelch", "VFO B Squelch",
@@ -1232,22 +1179,49 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         add_radio_bool(key_grp, "ani_sw", "ANI-ID Switch", _settings.ani_sw,
                        doc="Select to transmit the ANI ID.")
 
-        """
-        # TODO: ANI ID cannot start with 0 and
+        # ANI ID is stored as byte values with 0x0F as terminator
+        # Convert to ascii chars for display
+        def get_ani(ani):
+            _ani = ""
+            for i in range(0, 6):
+                if ani[i] < 10:
+                    _ani += chr(ani[i] + 0x30)
+                else:
+                    break
+            return str(_ani)
+
+        # ANI ID cannot start with 0 and
         # must use digits 0-9, be between 3 and
         # 6 digits in length
-        _ani = ""
-        for i in _settings.ani:
-            if i < 10:
-                _ani += chr(i + 0x30)
+        # ANI ID is stored as byte values with 0x0F as terminator
+        def set_ani(setting, obj, atrb):
+            """ Callback to set ANI ID."""
+            _ani = bytearray([0xF0] * 6)    # Unused bytes are set to 0xF0 in radio
+            ani = str(setting.value).strip()
+            if ani.isnumeric():
+                if ani[0] != '0':
+                    length = len(ani)
+                    if length > 2:
+                        # Convert bytes to their ascii rep.
+                        for i in range(0, length):
+                            _ani[i] = int(ani[i])
+                        # Add terminator
+                        _ani[length] = 0x0F
+                    else:
+                        raise InvalidValueError("ANI ID must be longer than 2 digits")
+                else:
+                    raise InvalidValueError("ANI ID cannot begin with a 0")
             else:
-                break
+                raise InvalidValueError("ANI ID must be numeric only")
+
+            setattr(obj, atrb, _ani)
+
+        _ani = get_ani(_settings.ani)
         val = RadioSettingValueString(0, 6, _ani)
         val.set_mutable(True)
         rs = RadioSetting("ani", "ANI code", val)
-        rs.set_apply_callback(ani_apply, _settings, "ani")
+        rs.set_apply_callback(set_ani, _settings, "ani")
         key_grp.append(rs)
-        """
 
         add_radio_setting(key_grp, "pf2_func", "PF2 Key function",
                           zero_indexed_seq_map(PF2KEY_LIST), _settings.pf2_func,
@@ -1266,6 +1240,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         #       u16    lower;
         #       u16    upper;
         #   } scan_groups[10];
+        # TODO: Is there a grid widget that can be used for these?
         add_radio_setting(scan_grp, "scg_a", "Scanning Channel Group A",
                           zero_indexed_seq_map(SCANGRP_LIST), _settings.scg_a,
                           doc="Scanning Channel Group A.")
@@ -1294,6 +1269,7 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         #    struct {
         #        char    call_name[6];
         #    } call_group_name[20];
+        # TODO: Is there a grid widget that can be used for this?
         for g in range(0, 20):
             _call_code = ""
             for i in self._memobj.call_groups[g].call_code:
@@ -1304,10 +1280,11 @@ class ARF8Radio(chirp_common.CloneModeRadio,
             val = RadioSettingValueString(0, 6, _call_code)
             val.set_mutable(True)
 
-            rs = RadioSetting("call_groups/%d.call_code" % g, "%d. Call Code" % g, val)
+            rs = RadioSetting("call_groups/%d.call_code" % g, "%d. Call Code" % (g+1), val)
             call_grp.append(rs)
 
-            _call_name = "".join(map(chr, self._memobj.call_group_name[g].call_name))
+            #_call_name = "".join(map(chr, self._memobj.call_group_name[g].call_name))
+            _call_name = str(self._memobj.call_group_name[g].call_name)
             val = RadioSettingValueString(0, 6, _call_name)
             val.set_mutable(True)
 
@@ -1315,19 +1292,15 @@ class ARF8Radio(chirp_common.CloneModeRadio,
             call_grp.append(rs)
         # OEM info
         #
-        # TODO: Display the settings read from the ID process???
+        # Display the settings read from the ID process
         # TODO: Need to find a serial number in the device
-        rsvs = RadioSettingValueString(0, 8, "01234567")
-        rsvs.set_mutable(False)
-        rs = RadioSetting("sn", "Serial Number", rsvs)
-        info_grp.append(rs)
 
         rsvs = RadioSettingValueString(0, 9, self.mem_model)
         rsvs.set_mutable(False)
         rs = RadioSetting("model", "Model Name", rsvs)
         info_grp.append(rs)
 
-        # #seekto 0x0044;     // TODO: This doesn't exist in radio memory
+        # #seekto 0x0044;         // This doesn't exist in radio memory
         #     struct {            // Can get from CMD_ID
         #         u32    rx_start;
         #         u32    rx_stop;
@@ -1335,13 +1308,50 @@ class ARF8Radio(chirp_common.CloneModeRadio,
         #         u32    tx_stop;
         #     } uhf_limits;
         #
-        #     #seekto 0x0054;     // TODO: This doesn't exist in radio memory
+        #     #seekto 0x0054;     // This doesn't exist in radio memory
         #     struct {            // Can get from CMD_ID
         #         u32    rx_start;
         #         u32    rx_stop;
         #         u32    tx_start;
         #         u32    tx_stop;
         #     } vhf_limits;
+
+        # Show frequency range of this radio
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vhf_limits.rx_start))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("vhf_limits.rx_start", "VHF RX from (MHz)", rsvs)
+        info_grp.append(rs)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vhf_limits.rx_stop))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("vhf_limits.rx_stop", "VHF RX to (MHz)", rsvs)
+        info_grp.append(rs)
+
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vhf_limits.tx_start))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("vhf_limits.tx_start", "VHF TX from (MHz)", rsvs)
+        info_grp.append(rs)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_vhf_limits.tx_stop))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("vhf_limits.tx_stop", "VHF TX to (MHz)", rsvs)
+        info_grp.append(rs)
+
+        rsvs = RadioSettingValueString(0, 10, int2freq(_uhf_limits.rx_start))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("uhf_limits.rx_start", "UHF RX from (MHz)", rsvs)
+        info_grp.append(rs)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_uhf_limits.rx_stop))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("uhf_limits.rx_stop", "UHF RX to (MHz)", rsvs)
+        info_grp.append(rs)
+
+        rsvs = RadioSettingValueString(0, 10, int2freq(_uhf_limits.tx_start))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("uhf_limits.tx_start", "UHF TX from (MHz)", rsvs)
+        info_grp.append(rs)
+        rsvs = RadioSettingValueString(0, 10, int2freq(_uhf_limits.tx_stop))
+        rsvs.set_mutable(False)
+        rs = RadioSetting("uhf_limits.tx_stop", "UHF TX to (MHz)", rsvs)
+        info_grp.append(rs)
 
         return group
 
@@ -1386,6 +1396,9 @@ class ARF8Radio(chirp_common.CloneModeRadio,
                         LOG.debug("Setting %s = %s" % (setting, element.value))
                         setattr(obj, setting, element.value)
                 except Exception as e:
-                    LOG.debug(element.get_name())
+                    LOG.info("Error setting %s - %s" % (element.get_name(), e))
+                    # Note: This will stop execution as nothing handles this
+                    # in higher levels of code
+                    # TODO: either remove or create popup dialog to alert user?
                     raise
 
