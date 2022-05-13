@@ -71,6 +71,7 @@ class SettingsThread(threading.Thread):
 
 class ChirpCloneDialog(wx.Dialog):
     def __init__(self, *a, **k):
+        k["style"] = k.get("style", 0) | wx.DEFAULT_DIALOG_STYLE | wx.RESIZE_BORDER
         super(ChirpCloneDialog, self).__init__(
             *a, title='Communicate with radio', **k)
 
